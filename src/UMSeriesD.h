@@ -2,32 +2,63 @@
  * Unexpected Maker Series[D] Arduino Helper Library
  * Release version 1.0.0
  * Requires ESP32 Arduino Core 3.x - 3.2.1 for EdgeS3[D] support
+ * TinyPICO[D] and TinyC6[D] use the TinyPICO and TinyC6 board selections
  */
 
 #ifndef _UMSeriesD_H
 #define _UMSeriesD_H
 
 #include <Arduino.h>
-#include <esp_adc_cal.h>
-#include <soc/adc_channel.h>
 #include <Wire.h>
 
+// UM_RGB_DATA, UM_RGB_PWR and UM_VBUS_SENSE are set per board, as the core
+// variants for the TinyPICO and TinyC6 describe the original (non [D]) boards
 #if defined(ARDUINO_FEATHERS3)
+#include <esp_adc_cal.h>
+#include <soc/adc_channel.h>
 #define ALS_ADC_CHANNEL ADC1_GPIO4_CHANNEL
 #define ALS_ADC_PIN 4
 #define HAS_RGB 1
 #define HAS_VBUS_SENSE 1
+#define UM_RGB_DATA RGB_DATA
+#define UM_RGB_PWR RGB_PWR
+#define UM_VBUS_SENSE VBUS_SENSE
 #define RF_SWITCH 41
 #elif defined(ARDUINO_TINYS3)
 #define HAS_RGB 1
 #define HAS_VBUS_SENSE 1
+#define UM_RGB_DATA RGB_DATA
+#define UM_RGB_PWR RGB_PWR
+#define UM_VBUS_SENSE VBUS_SENSE
 #define RF_SWITCH 38
 #elif defined(ARDUINO_PROS3)
 #define HAS_RGB 1
 #define HAS_VBUS_SENSE 1
+#define UM_RGB_DATA RGB_DATA
+#define UM_RGB_PWR RGB_PWR
+#define UM_VBUS_SENSE VBUS_SENSE
 #define RF_SWITCH 11
 #elif defined(ARDUINO_EDGES3D)
 #define RF_SWITCH 38
+#elif defined(ARDUINO_TINYPICO)
+// TinyPICO[D]
+#define HAS_RGB 1
+#define HAS_VBUS_SENSE 1
+#define UM_RGB_DATA 2
+#define UM_RGB_PWR 13
+#define UM_VBUS_SENSE 9
+#define RF_SWITCH 12
+#elif defined(ARDUINO_TINYC6)
+// TinyC6[D]
+#define HAS_RGB 1
+#define HAS_VBUS_SENSE 1
+#define HAS_IO_EXPANDER 1
+#define UM_RGB_DATA 23
+#define UM_RGB_PWR 22
+#define UM_VBUS_SENSE 5
+// RF Switch is on FXL6408 IO expander pin XIO0
+#define RF_SWITCH 0
+#define RF_SWITCH_ON_IO_EXPANDER 1
 #else
 #error \
     "The board you have selected is not compatible with the UMS3 helper library"
@@ -53,6 +84,28 @@ class UMSeriesD
 
     const uint8_t I2C_ADDR = 0x36;
 
+#if defined(HAS_IO_EXPANDER)
+    enum class FXL6408_REG
+    {
+        DEVICE_ID = 0x01,
+        IO_DIR = 0x03,
+        OUTPUT_STATE = 0x05,
+        OUTPUT_HIGH_Z = 0x07,
+        INPUT_DEFAULT_STATE = 0x09,
+        PULL_ENABLE = 0x0B,
+        PULL_UP_DOWN = 0x0D,
+        INPUT_STATUS = 0x0F,
+        INT_MASK = 0x11,
+        INT_STATUS = 0x13
+    };
+
+    // FXL6408 address is 0x43 with ADDR tied low, 0x44 with ADDR tied high
+#if !defined(FXL6408_I2C_ADDR)
+#define FXL6408_I2C_ADDR 0x43
+#endif
+    const uint8_t IOX_I2C_ADDR = FXL6408_I2C_ADDR;
+#endif
+
 public:
 #if defined(HAS_RGB)
     UMSeriesD() : brightness(255) {}
@@ -64,8 +117,8 @@ public:
     {
 #if defined(HAS_RGB)
         // RGB_PWR is LDO2 on boards that have it
-        pinMode(RGB_PWR, OUTPUT);
-        rmtInit(RGB_DATA, RMT_TX_MODE, RMT_MEM_NUM_BLOCKS_1, 10000000);
+        pinMode(UM_RGB_PWR, OUTPUT);
+        rmtInit(UM_RGB_DATA, RMT_TX_MODE, RMT_MEM_NUM_BLOCKS_1, 10000000);
 #endif
 
 #if defined(ARDUINO_FEATHERS3)
@@ -77,12 +130,28 @@ public:
 #endif
 
 #if defined(HAS_VBUS_SENSE)
-        pinMode(VBUS_SENSE, INPUT);
+        pinMode(UM_VBUS_SENSE, INPUT);
+#endif
+
+#if defined(HAS_IO_EXPANDER)
+        // The IO expander is needed from begin(), so start the default Wire
+        // if FG_setup() hasn't been called yet. FG_setup() can still replace it.
+        if (wire == nullptr)
+        {
+            Wire.begin();
+            wire = &Wire;
+        }
+        IOX_begin();
 #endif
 
         // Setup the RF Switch IO and set to onboard
+#if defined(RF_SWITCH_ON_IO_EXPANDER)
+        IOX_digitalWrite(RF_SWITCH, false);
+        IOX_pinMode(RF_SWITCH, OUTPUT);
+#else
         pinMode(RF_SWITCH, OUTPUT);
         digitalWrite(RF_SWITCH, false);
+#endif
     }
 
     void setLDO2Power(bool on)
@@ -97,7 +166,7 @@ public:
     void setPixelPower(bool on)
     {
 #if defined(HAS_RGB)
-        digitalWrite(RGB_PWR, on);
+        digitalWrite(UM_RGB_PWR, on);
 #else
         Serial.println("UMSeriesD ERROR: setPixelPower not available");
 #endif
@@ -166,7 +235,7 @@ public:
             }
         }
 
-        rmtWrite(RGB_DATA, rmt_data, 3 * 8, RMT_WAIT_FOR_EVER);
+        rmtWrite(UM_RGB_DATA, rmt_data, 3 * 8, RMT_WAIT_FOR_EVER);
         next_rmt_write = micros();
 #else
         Serial.println("UMSeriesD ERROR: writePixel not available");
@@ -237,16 +306,73 @@ public:
         return (uint8_t)i2c_read(MAX17048_REG::VERSION);
     }
 
+    /* FXL6408 8-bit I2C IO expander - uses the TwoWire passed to FG_setup() */
+    bool IOX_begin()
+    {
+#if defined(HAS_IO_EXPANDER)
+        // Manufacturer ID is 0b101 in bits 7:5. Reading also clears the reset interrupt flag
+        return (iox_read(FXL6408_REG::DEVICE_ID) >> 5) == 0b101;
+#else
+        Serial.println("UMSeriesD ERROR: IOX_begin not available");
+        return false;
+#endif
+    }
+
+    void IOX_pinMode(uint8_t pin, uint8_t mode)
+    {
+#if defined(HAS_IO_EXPANDER)
+        uint8_t mask = 1 << pin;
+        if (mode == OUTPUT)
+        {
+            iox_update(FXL6408_REG::IO_DIR, mask, true);
+            // Outputs default to high-Z after reset, so enable the driver
+            iox_update(FXL6408_REG::OUTPUT_HIGH_Z, mask, false);
+        }
+        else
+        {
+            iox_update(FXL6408_REG::IO_DIR, mask, false);
+            iox_update(FXL6408_REG::PULL_UP_DOWN, mask, mode == INPUT_PULLUP);
+            iox_update(FXL6408_REG::PULL_ENABLE, mask, mode == INPUT_PULLUP || mode == INPUT_PULLDOWN);
+        }
+#else
+        Serial.println("UMSeriesD ERROR: IOX_pinMode not available");
+#endif
+    }
+
+    void IOX_digitalWrite(uint8_t pin, bool state)
+    {
+#if defined(HAS_IO_EXPANDER)
+        iox_update(FXL6408_REG::OUTPUT_STATE, 1 << pin, state);
+#else
+        Serial.println("UMSeriesD ERROR: IOX_digitalWrite not available");
+#endif
+    }
+
+    bool IOX_digitalRead(uint8_t pin)
+    {
+#if defined(HAS_IO_EXPANDER)
+        // Reading the input status also clears any pending interrupt
+        return (iox_read(FXL6408_REG::INPUT_STATUS) >> pin) & 1;
+#else
+        Serial.println("UMSeriesD ERROR: IOX_digitalRead not available");
+        return false;
+#endif
+    }
+
     void setAntennaExternal(bool state)
     {
         // Set the RF Switch HIGH for External and LOW for Internal
+#if defined(RF_SWITCH_ON_IO_EXPANDER)
+        IOX_digitalWrite(RF_SWITCH, state);
+#else
         digitalWrite(RF_SWITCH, state);
+#endif
     }
 
     bool getVbusPresent()
     {
 #if defined(HAS_VBUS_SENSE)
-        return digitalRead(VBUS_SENSE);
+        return digitalRead(UM_VBUS_SENSE);
 #else
         Serial.println("UMSeriesD ERROR: getVbusPresent not available");
         return false;
@@ -291,7 +417,34 @@ private:
         return data;
     }
 
-    TwoWire *wire;
+#if defined(HAS_IO_EXPANDER)
+    /* I2C communication for FXL6408 IO expander */
+    void iox_write(const FXL6408_REG reg, const uint8_t data)
+    {
+        wire->beginTransmission(IOX_I2C_ADDR);
+        wire->write((uint8_t)reg);
+        wire->write(data);
+        wire->endTransmission();
+    }
+
+    uint8_t iox_read(const FXL6408_REG reg)
+    {
+        wire->beginTransmission(IOX_I2C_ADDR);
+        wire->write((uint8_t)reg);
+        wire->endTransmission(false);
+        wire->requestFrom((uint8_t)IOX_I2C_ADDR, (uint8_t)1);
+        return wire->read();
+    }
+
+    // Read-modify-write the bits in mask to set or clear
+    void iox_update(const FXL6408_REG reg, const uint8_t mask, const bool set)
+    {
+        uint8_t data = iox_read(reg);
+        iox_write(reg, set ? (data | mask) : (data & ~mask));
+    }
+#endif
+
+    TwoWire *wire = nullptr;
 };
 
 #endif

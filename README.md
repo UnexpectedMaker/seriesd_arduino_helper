@@ -1,8 +1,22 @@
 # Unexpected Maker Series[D] Arduino Helper Library
 
-This is the Arduino/PlatformIO helper library for all the Unexpected Maker Series[D] boards - [Current lineup](https://esp32s3.com).
+This is the Arduino/PlatformIO helper library for all the Unexpected Maker Series[D] boards - [Current lineup](https://unexpectedmaker.com/#series-d).
 
 Examples can be found in the [examples directory](./examples/), these can also be loaded from the examples menu in the Arduino IDE.
+
+## Selecting your Series[D] board
+
+Apart from the EdgeS3[D], the Series[D] boards don't have their own [D] board listing in the Arduino boards list. Select the original board instead:
+
+| Series[D] board | Board to select |
+|---|---|
+| TinyS3[D] | UM TinyS3 |
+| ProS3[D] | UM PROS3 |
+| FeatherS3[D] | UM FeatherS3 |
+| TinyPICO[D] | UM TinyPICO |
+| TinyC6[D] | UM TinyC6 |
+| EdgeS3[D] | UM EdgeS3[D] |
+
 
 ## Installation
 
@@ -59,5 +73,13 @@ float getBatteryVoltage();
 bool getVbusPresent();
 
 // Set the RF Switch to external antenna
+// On the TinyC6[D] the RF Switch is on the FXL6408 IO expander (XIO0)
 void setAntennaExternal(bool state);
+
+// FXL6408 IO expander (uses the TwoWire passed to FG_setup, or Wire if begin() is called first)
+// Only available on the TinyC6[D]
+bool IOX_begin();
+void IOX_pinMode(uint8_t pin, uint8_t mode);
+void IOX_digitalWrite(uint8_t pin, bool state);
+bool IOX_digitalRead(uint8_t pin);
 ```
